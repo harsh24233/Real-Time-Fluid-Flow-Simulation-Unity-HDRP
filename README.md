@@ -1,4 +1,4 @@
-# Real-Time Fluid Flow Simulation — Unity HDRP
+# Real-Time Fluid Flow Simulation - Unity HDRP
 
 A Unity-based real-time fluid flow simulation framework for an enclosed pipeline system, developed using the High Definition Render Pipeline (HDRP). The project combines C# pipeline-control components with GPU compute-shader functionality for fluid simulation and processing.
 
