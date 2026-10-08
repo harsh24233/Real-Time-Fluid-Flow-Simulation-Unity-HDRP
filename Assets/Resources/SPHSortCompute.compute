@@ -1,0 +1,34 @@
+#pragma kernel BitonicSort
+
+struct ParticleCell {
+    uint particleIndex;
+    uint cellHash;
+};
+
+RWStructuredBuffer<ParticleCell> _particleCells;
+
+uint _k;
+uint _j;
+
+[numthreads(128, 1, 1)]
+void BitonicSort(uint3 id : SV_DISPATCHTHREADID) {
+    uint i = id.x;
+    uint ixj = i ^ _j;
+
+    if (ixj > i) {
+        if ((i & _k) == 0) {
+            if (_particleCells[i].cellHash > _particleCells[ixj].cellHash) {
+                ParticleCell temp = _particleCells[i];
+                _particleCells[i] = _particleCells[ixj];
+                _particleCells[ixj] = temp;
+            }
+        }
+        if ((i & _k) != 0) {
+            if (_particleCells[i].cellHash < _particleCells[ixj].cellHash) {
+                ParticleCell temp = _particleCells[i];
+                _particleCells[i] = _particleCells[ixj];
+                _particleCells[ixj] = temp;
+            }
+        }
+    }
+}
