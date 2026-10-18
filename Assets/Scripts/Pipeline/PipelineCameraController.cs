@@ -30,6 +30,7 @@ namespace PipelineControl
         private float yaw = 0f;
         private float pitch = 0f;
 
+#if !UNITY_WSA
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoAttachToMainCamera()
         {
@@ -40,6 +41,7 @@ namespace PipelineControl
                 mainCam.gameObject.AddComponent<PipelineCameraController>();
             }
         }
+#endif
 
         private void Start()
         {
