@@ -447,31 +447,31 @@ PrefabInstance:
     m_Modifications:
     - target: {fileID: 2351505566771328526, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalPosition.x
-      value: 3.344727
+      value: 0.5577144
       objectReference: {fileID: 0}
     - target: {fileID: 2351505566771328526, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalPosition.y
-      value: -1.6460421
+      value: -0.32604206
       objectReference: {fileID: 0}
     - target: {fileID: 2351505566771328526, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalPosition.z
-      value: 4.7446394
+      value: 0.7137356
       objectReference: {fileID: 0}
     - target: {fileID: 2351505566771328526, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalRotation.w
-      value: -0.000000043471935
+      value: 0.9933133
       objectReference: {fileID: 0}
     - target: {fileID: 2351505566771328526, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalRotation.x
-      value: -0.0000000045690842
+      value: 0.10440143
       objectReference: {fileID: 0}
     - target: {fileID: 2351505566771328526, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalRotation.y
-      value: 0.9945219
+      value: -0.049015336
       objectReference: {fileID: 0}
     - target: {fileID: 2351505566771328526, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalRotation.z
-      value: -0.104528464
+      value: 0.0051517193
       objectReference: {fileID: 0}
     - target: {fileID: 2351505567455720332, guid: 4d7e2f87fefe0ba468719b15288b46e7, type: 3}
       propertyPath: m_LocalPosition.x
@@ -604,6 +604,10 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 0}
     m_Modifications:
+    - target: {fileID: 2471102458936864900, guid: ad5b753b73e311143a85055b15cea562, type: 3}
+      propertyPath: cameraSettings.moveSpeed
+      value: 5
+      objectReference: {fileID: 0}
     - target: {fileID: 3493013819197874656, guid: ad5b753b73e311143a85055b15cea562, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0
@@ -919,6 +923,10 @@ MonoBehaviour:
   minDrainSim2: 37.8
   sourceFillPercent: 100
   destinationFillPercent: 0
+  uiOffsetFromPipe: {x: 2.6, y: 0.7, z: 0.4}
+  uiYaw: 180
+  uiScale: 0.001
+  uiPanelSize: {x: 400, y: 420}
   pumpController: {fileID: 0}
   valveController: {fileID: 0}
 --- !u!4 &2096011924
