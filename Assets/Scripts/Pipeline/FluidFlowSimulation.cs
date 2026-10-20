@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
+using UnityEngine.XR.Interaction.Toolkit.UI;
 
 /// <summary>
 /// Dual Fluid Flow Simulation Engine:
@@ -54,9 +55,19 @@ public class FluidFlowSimulation : MonoBehaviour
     [Range(5f, 60f)]
     public float minDrainSim2 = 37.8f;
 
-    [Header("Live Tank Fill (0–100%)")]
+    [Header("Live Tank Fill (0\u2013100%)")]
     [Range(0f, 100f)] public float sourceFillPercent      = 100f;
     [Range(0f, 100f)] public float destinationFillPercent = 0f;
+
+    [Header("UI Placement (World Space - HoloLens)")]
+    [Tooltip("Where the Sim 1/Sim 2 panel sits, relative to the pipe object (world axes).")]
+    public Vector3 uiOffsetFromPipe = new Vector3(2.6f, 0.7f, 0.4f);
+    [Tooltip("Rotation around Y. 180 = panel faces toward +Z (viewer standing at +Z).")]
+    public float uiYaw = 180f;
+    [Tooltip("World size of one canvas unit. 0.001 = 1 unit is 1 mm.")]
+    public float uiScale = 0.001f;
+    [Tooltip("Canvas size in canvas units (width, height).")]
+    public Vector2 uiPanelSize = new Vector2(400f, 420f);
 
     // Private Fields
     private FlowDirection _activeDirection = FlowDirection.None;
@@ -68,6 +79,9 @@ public class FluidFlowSimulation : MonoBehaviour
 
     private ParticleSystem _pipePS;
     private ParticleSystem.Particle[] _particleBuffer;
+
+    private Canvas _canvas;
+    private bool   _xrModuleReady;
 
     // UI elements - Sim 1
     private Button _startBtnSim1;
@@ -131,6 +145,9 @@ public class FluidFlowSimulation : MonoBehaviour
 
     private void Update()
     {
+        // Make sure the scene's EventSystem uses the XR UI Input Module (needed for hand/gaze clicks).
+        if (!_xrModuleReady) EnsureXRInputModule();
+
         RefreshFluids();
 
         if (!IsFlowing) return;
@@ -582,15 +599,22 @@ public class FluidFlowSimulation : MonoBehaviour
 
     private void BuildUI()
     {
+        // ---- World Space canvas (HoloLens) ----
         var cvGO = new GameObject("FluidFlowSimCanvas");
         var cv   = cvGO.AddComponent<Canvas>();
-        cv.renderMode   = RenderMode.ScreenSpaceOverlay;
+        cv.renderMode   = RenderMode.WorldSpace;
         cv.sortingOrder = 20;
-        var cs = cvGO.AddComponent<CanvasScaler>();
-        cs.uiScaleMode         = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        cs.referenceResolution = new Vector2(1920f, 1080f);
-        cs.matchWidthOrHeight  = 0.5f;
+        cv.worldCamera  = Camera.main;
+        _canvas = cv;
+        cvGO.AddComponent<CanvasScaler>();
         cvGO.AddComponent<GraphicRaycaster>();
+        cvGO.AddComponent<TrackedDeviceGraphicRaycaster>();
+
+        var cvRT = cvGO.GetComponent<RectTransform>();
+        cvRT.sizeDelta  = uiPanelSize;
+        cvRT.localScale = Vector3.one * uiScale;
+        cvRT.position   = GetPipePosition() + uiOffsetFromPipe;
+        cvRT.rotation   = Quaternion.Euler(0f, uiYaw, 0f);
 
         Font f = GetFont();
 
@@ -599,8 +623,8 @@ public class FluidFlowSimulation : MonoBehaviour
         pan1GO.transform.SetParent(cvGO.transform, false);
         pan1GO.AddComponent<Image>().color = new Color(0.03f, 0.08f, 0.18f, 0.95f);
         var pan1RT       = pan1GO.GetComponent<RectTransform>();
-        pan1RT.anchorMin = new Vector2(0.67f, 0.02f);
-        pan1RT.anchorMax = new Vector2(0.99f, 0.32f);
+        pan1RT.anchorMin = new Vector2(0f, 0f);
+        pan1RT.anchorMax = new Vector2(1f, 0.48f);
         pan1RT.offsetMin = pan1RT.offsetMax = Vector2.zero;
 
         MkLbl(pan1GO.transform, "Title1", "SIMULATION 1: FORWARD FLOW",
@@ -644,7 +668,7 @@ public class FluidFlowSimulation : MonoBehaviour
         lbl1GO.transform.SetParent(btn1GO.transform, false);
         _startBtnTxtSim1 = lbl1GO.AddComponent<Text>();
         _startBtnTxtSim1.font      = f;
-        _startBtnTxtSim1.text      = "▶ Start Sim 1 (Cube.001 ➔ Cube.002)";
+        _startBtnTxtSim1.text      = "\u25B6 Start Sim 1 (Cube.001 \u2794 Cube.002)";
         _startBtnTxtSim1.fontSize  = 16;
         _startBtnTxtSim1.fontStyle = FontStyle.Bold;
         _startBtnTxtSim1.alignment = TextAnchor.MiddleCenter;
@@ -660,8 +684,8 @@ public class FluidFlowSimulation : MonoBehaviour
         pan2GO.transform.SetParent(cvGO.transform, false);
         pan2GO.AddComponent<Image>().color = new Color(0.02f, 0.10f, 0.22f, 0.95f);
         var pan2RT       = pan2GO.GetComponent<RectTransform>();
-        pan2RT.anchorMin = new Vector2(0.67f, 0.34f);
-        pan2RT.anchorMax = new Vector2(0.99f, 0.64f);
+        pan2RT.anchorMin = new Vector2(0f, 0.52f);
+        pan2RT.anchorMax = new Vector2(1f, 1f);
         pan2RT.offsetMin = pan2RT.offsetMax = Vector2.zero;
 
         MkLbl(pan2GO.transform, "Title2", "SIMULATION 2: REVERSE (8-POINT)",
@@ -705,7 +729,7 @@ public class FluidFlowSimulation : MonoBehaviour
         lbl2GO.transform.SetParent(btn2GO.transform, false);
         _startBtnTxtSim2 = lbl2GO.AddComponent<Text>();
         _startBtnTxtSim2.font      = f;
-        _startBtnTxtSim2.text      = "▶ Start Sim 2 (Cube.002 ➔ Cube.001)";
+        _startBtnTxtSim2.text      = "\u25B6 Start Sim 2 (Cube.002 \u2794 Cube.001)";
         _startBtnTxtSim2.fontSize  = 16;
         _startBtnTxtSim2.fontStyle = FontStyle.Bold;
         _startBtnTxtSim2.alignment = TextAnchor.MiddleCenter;
@@ -747,7 +771,7 @@ public class FluidFlowSimulation : MonoBehaviour
             bool canStart1 = (sourceFillPercent > minDrainSim1 + 0.05f);
             _startBtnSim1.interactable = active1 || (!IsFlowing && canStart1);
             if (_startBtnTxtSim1 != null)
-                _startBtnTxtSim1.text = active1 ? "⏹ Stop Sim 1" : (canStart1 ? "▶ Start Sim 1 (Cube.001 ➔ Cube.002)" : "▶ Sim 1 Drained (Cube.001 Empty)");
+                _startBtnTxtSim1.text = active1 ? "\u23F9 Stop Sim 1" : (canStart1 ? "\u25B6 Start Sim 1 (Cube.001 \u2794 Cube.002)" : "\u25B6 Sim 1 Drained (Cube.001 Empty)");
         }
 
         if (_startBtnSim2 != null)
@@ -756,7 +780,7 @@ public class FluidFlowSimulation : MonoBehaviour
             bool canStart2 = (destinationFillPercent > minDrainSim2 + 0.05f);
             _startBtnSim2.interactable = active2 || (!IsFlowing && canStart2);
             if (_startBtnTxtSim2 != null)
-                _startBtnTxtSim2.text = active2 ? "⏹ Stop Sim 2" : (canStart2 ? "▶ Start Sim 2 (Cube.002 ➔ Cube.001)" : "▶ Sim 2 Drained (Cube.002 Empty)");
+                _startBtnTxtSim2.text = active2 ? "\u23F9 Stop Sim 2" : (canStart2 ? "\u25B6 Start Sim 2 (Cube.002 \u2794 Cube.001)" : "\u25B6 Sim 2 Drained (Cube.002 Empty)");
         }
     }
 
@@ -765,10 +789,27 @@ public class FluidFlowSimulation : MonoBehaviour
         if (FindAnyObjectByType<EventSystem>() != null) return;
         var es = new GameObject("EventSystem_FluidSim");
         es.AddComponent<EventSystem>();
-        var t = System.Type.GetType(
-            "UnityEngine.InputSystem.UI.InputSystemUIInputModule, Unity.InputSystem");
-        if (t != null) es.AddComponent(t);
-        else            es.AddComponent<StandaloneInputModule>();
+        es.AddComponent<XRUIInputModule>();
+    }
+
+    // Replaces any non-XR input module on the scene's EventSystem with XRUIInputModule,
+    // so hand/gaze interaction can click the world-space canvas.
+    private void EnsureXRInputModule()
+    {
+        var es = FindAnyObjectByType<EventSystem>();
+        if (es == null) return;
+
+        foreach (var m in es.GetComponents<BaseInputModule>())
+        {
+            if (!(m is XRUIInputModule)) Destroy(m);
+        }
+        if (es.GetComponent<XRUIInputModule>() == null)
+            es.gameObject.AddComponent<XRUIInputModule>();
+
+        if (_canvas != null && _canvas.worldCamera == null)
+            _canvas.worldCamera = Camera.main;
+
+        _xrModuleReady = true;
     }
 
     private static Font GetFont()
