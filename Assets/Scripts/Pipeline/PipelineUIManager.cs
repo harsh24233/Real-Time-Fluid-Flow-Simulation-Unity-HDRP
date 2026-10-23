@@ -1,12 +1,14 @@
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
+using UnityEngine.XR.Interaction.Toolkit.UI;
 
 namespace PipelineControl
 {
     /// <summary>
     /// UI Manager for controlling Pump and Valve ON/OFF functionality, displaying flow metrics,
     /// and managing tank fluid transfer UI controls.
+    /// HUD is a world-space uGUI canvas (HoloLens / XR compatible).
     /// </summary>
     public class PipelineUIManager : MonoBehaviour
     {
@@ -24,9 +26,17 @@ namespace PipelineControl
         public float Tanker1FillPercentage => tank1Capacity > 0f ? Mathf.Clamp01(tank1Current / tank1Capacity) * 100f : 0f;
         public float Tanker2FillPercentage => tank1Capacity > 0f ? Mathf.Clamp01(tank2Current / tank1Capacity) * 100f : 0f;
 
-        [Header("Display Options")]
-        [Tooltip("Enable built-in IMGUI overlay HUD with resolution scaling.")]
-        [SerializeField] private bool enableOnGUIHUD = true;
+        [Header("World-Space HUD (HoloLens)")]
+        [Tooltip("Build the Pump/Valve/Tank HUD as a world-space canvas.")]
+        [SerializeField] private bool enableWorldSpaceHUD = true;
+        [Tooltip("HUD position relative to the pipe object (world axes). Default sits above the Sim 1/Sim 2 panels.")]
+        [SerializeField] private Vector3 hudOffsetFromPipe = new Vector3(2.6f, 1.11f, 0.4f);
+        [Tooltip("Rotation around Y. 180 matches the Sim panel canvas.")]
+        [SerializeField] private float hudYaw = 180f;
+        [Tooltip("World size of one canvas unit. 0.001 = 1 unit is 1 mm.")]
+        [SerializeField] private float hudScale = 0.001f;
+        [Tooltip("Canvas size in canvas units (width, height).")]
+        [SerializeField] private Vector2 hudPanelSize = new Vector2(450f, 340f);
 
         [Header("Pump UI Controls (Optional uGUI)")]
         [SerializeField] private Button pumpButton;
@@ -40,8 +50,11 @@ namespace PipelineControl
         [SerializeField] private Text flowRateText;
         [SerializeField] private Text systemStatusText;
 
-        [Header("Auto uGUI Settings")]
-        [SerializeField] private bool autoGenerateHUDIfMissing = false;
+        // Runtime-created HUD references
+        private Text _tank1Text;
+        private Text _tank2Text;
+        private Canvas _hudCanvas;
+        private FluidFlowSimulation _sim;
 
         private void Awake()
         {
@@ -53,9 +66,9 @@ namespace PipelineControl
             FindReferences();
             EnsureEventSystem();
 
-            if (autoGenerateHUDIfMissing && !HasAssignedUI())
+            if (enableWorldSpaceHUD && !HasAssignedUI())
             {
-                CreateRuntimeHUD();
+                CreateWorldSpaceHUD();
             }
 
             SetupUIListeners();
@@ -66,11 +79,15 @@ namespace PipelineControl
         {
             SimulateTankTransfer();
             UpdateStatusDisplays();
+
+            if (_hudCanvas != null && _hudCanvas.worldCamera == null)
+                _hudCanvas.worldCamera = Camera.main;
         }
 
         private void SimulateTankTransfer()
         {
-            var sim = FindAnyObjectByType<FluidFlowSimulation>();
+            if (_sim == null) _sim = FindAnyObjectByType<FluidFlowSimulation>();
+            var sim = _sim;
             if (sim != null)
             {
                 tank1Current = (sim.sourceFillPercent / 100f) * tank1Capacity;
@@ -91,6 +108,7 @@ namespace PipelineControl
             if (pumpController == null) pumpController = FindAnyObjectByType<PumpController>();
             if (valveController == null) valveController = FindAnyObjectByType<ValveController>();
             if (flowController == null) flowController = FindAnyObjectByType<PipeFlowController>();
+            if (_sim == null) _sim = FindAnyObjectByType<FluidFlowSimulation>();
         }
 
         private bool HasAssignedUI()
@@ -104,16 +122,7 @@ namespace PipelineControl
             {
                 GameObject es = new GameObject("EventSystem");
                 es.AddComponent<EventSystem>();
-
-                var inputModuleType = System.Type.GetType("UnityEngine.InputSystem.UI.InputSystemUIInputModule, Unity.InputSystem");
-                if (inputModuleType != null)
-                {
-                    es.AddComponent(inputModuleType);
-                }
-                else
-                {
-                    es.AddComponent<StandaloneInputModule>();
-                }
+                es.AddComponent<XRUIInputModule>();
             }
         }
 
@@ -143,96 +152,12 @@ namespace PipelineControl
             UpdateStatusDisplays();
         }
 
-        private void UpdateStatusDisplays()
+        private void ComputeStatus(out string statusStr, out Color statusColor)
         {
-            if (pumpController == null || valveController == null) FindReferences();
-
-            // Pump status
-            if (pumpStatusText != null && pumpController != null)
-            {
-                bool isOn = pumpController.IsOn;
-                pumpStatusText.text = isOn ? "PUMP: [ ON ]" : "PUMP: [ OFF ]";
-                pumpStatusText.color = isOn ? Color.green : Color.red;
-            }
-
-            // Valve status
-            if (valveStatusText != null && valveController != null)
-            {
-                bool isOpen = valveController.IsOpen;
-                float pct = valveController.OpenPercentage;
-                valveStatusText.text = isOpen ? $"VALVE: [ OPEN ({pct:F0}%) ]" : "VALVE: [ CLOSED ]";
-                valveStatusText.color = isOpen ? (pct >= 100f ? Color.green : Color.yellow) : Color.red;
-            }
-
-            // Flow rate text & System Status
-            float currentFlow = (flowController != null) ? flowController.CurrentFlowRate : 0f;
-            if (flowRateText != null)
-            {
-                flowRateText.text = $"FLOW RATE: {currentFlow:F1} L/min";
-            }
-
-            if (systemStatusText != null)
-            {
-                if (pumpController != null && !pumpController.IsOn)
-                {
-                    systemStatusText.text = "STATUS: IDLE (Pump Stopped)";
-                    systemStatusText.color = new Color(1f, 0.7f, 0.2f);
-                }
-                else if (valveController != null && !valveController.IsOpen)
-                {
-                    systemStatusText.text = "STATUS: BLOCKED (Valve Closed)";
-                    systemStatusText.color = Color.red;
-                }
-                else
-                {
-                    systemStatusText.text = "STATUS: ACTIVE (Fluid Flowing)";
-                    systemStatusText.color = Color.green;
-                }
-            }
-        }
-
-        #region IMGUI Resolution-Scaled Overlay HUD
-        private void OnGUI()
-        {
-            if (!enableOnGUIHUD || !Application.isPlaying) return;
-
-            if (pumpController == null || valveController == null) FindReferences();
-
-            // Dynamic scaling matrix based on screen height (baseline 1080p)
-            float scale = Mathf.Max(1.0f, Screen.height / 1080f);
-            Matrix4x4 origMatrix = GUI.matrix;
-            GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scale, scale, 1.0f));
-
-            int width = 450;
-            int height = 340;
-            Rect hudRect = new Rect(25, 25, width, height);
-
-            // Dark semi-transparent container box
-            GUI.color = new Color(0.07f, 0.09f, 0.14f, 0.95f);
-            GUI.Box(hudRect, GUIContent.none);
-            GUI.color = Color.white;
-
-            GUILayout.BeginArea(new Rect(40, 25, width - 30, height - 30));
-
-            // Title
-            GUIStyle titleStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 20,
-                fontStyle = FontStyle.Bold,
-                normal = { textColor = Color.cyan }
-            };
-            GUILayout.Label("PIPELINE FLOW CONTROL", titleStyle);
-
-            // Flow Rate & System Status
-            var sim = FindAnyObjectByType<FluidFlowSimulation>();
-            float currentFlow = (flowController != null) ? flowController.CurrentFlowRate : 0f;
             bool isPumpOn = (pumpController != null && pumpController.IsOn);
             bool isValveOpen = (valveController != null && valveController.IsOpen);
-            bool isSim1Active = sim != null && sim.IsFlowing && sim.ActiveDirection == FluidFlowSimulation.FlowDirection.Forward_Cube1To2;
-            bool isSim2Active = sim != null && sim.IsFlowing && sim.ActiveDirection == FluidFlowSimulation.FlowDirection.Reverse_Cube2To1;
-
-            string statusStr;
-            Color statusColor;
+            bool isSim1Active = _sim != null && _sim.IsFlowing && _sim.ActiveDirection == FluidFlowSimulation.FlowDirection.Forward_Cube1To2;
+            bool isSim2Active = _sim != null && _sim.IsFlowing && _sim.ActiveDirection == FluidFlowSimulation.FlowDirection.Reverse_Cube2To1;
 
             if (isSim1Active)
             {
@@ -272,94 +197,50 @@ namespace PipelineControl
                 statusStr = "STATUS: IDLE (Flow Stopped)";
                 statusColor = new Color(1f, 0.7f, 0.2f);
             }
-
-            GUIStyle statusStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 13,
-                fontStyle = FontStyle.Bold,
-                normal = { textColor = statusColor }
-            };
-            GUILayout.Label(statusStr, statusStyle);
-
-            GUIStyle flowStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 15,
-                fontStyle = FontStyle.Bold,
-                normal = { textColor = Color.yellow }
-            };
-            GUILayout.Label($"FLOW RATE: {currentFlow:F1} L/min", flowStyle);
-
-            GUILayout.Space(6);
-
-            // Tanker Fill Levels (Tank 1 & Tank 2)
-            float tank1Fill = Tanker1FillPercentage;
-            float tank2Fill = Tanker2FillPercentage;
-
-            GUIStyle tankStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 13,
-                fontStyle = FontStyle.Bold,
-                normal = { textColor = Color.white }
-            };
-            GUILayout.Label($"TANK 1 (Source): {tank1Fill:F0}% ({tank1Current:F0} L)", tankStyle);
-            GUILayout.Label($"TANK 2 (Storage): {tank2Fill:F0}% ({tank2Current:F0} L)", tankStyle);
-
-            GUILayout.Space(10);
-
-            // Pump Control Row
-            GUILayout.BeginHorizontal();
-            string pumpText = isPumpOn ? "PUMP: [ ON ]" : "PUMP: [ OFF ]";
-            Color pumpColor = isPumpOn ? Color.green : Color.red;
-            GUIStyle pLblStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 14,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleLeft,
-                normal = { textColor = pumpColor }
-            };
-            GUILayout.Label(pumpText, pLblStyle, GUILayout.Width(170), GUILayout.Height(34));
-
-            GUIStyle btnStyle = new GUIStyle(GUI.skin.button)
-            {
-                fontSize = 13,
-                fontStyle = FontStyle.Bold
-            };
-
-            if (GUILayout.Button("TOGGLE PUMP", btnStyle, GUILayout.Width(160), GUILayout.Height(34)))
-            {
-                if (pumpController != null) pumpController.TogglePump();
-            }
-            GUILayout.EndHorizontal();
-
-            GUILayout.Space(6);
-
-            // Valve Control Row
-            GUILayout.BeginHorizontal();
-            string valveText = isValveOpen ? "VALVE: [ OPEN ]" : "VALVE: [ CLOSED ]";
-            Color valveColor = isValveOpen ? Color.green : Color.red;
-            GUIStyle vLblStyle = new GUIStyle(GUI.skin.label)
-            {
-                fontSize = 14,
-                fontStyle = FontStyle.Bold,
-                alignment = TextAnchor.MiddleLeft,
-                normal = { textColor = valveColor }
-            };
-            GUILayout.Label(valveText, vLblStyle, GUILayout.Width(170), GUILayout.Height(34));
-
-            if (GUILayout.Button("TOGGLE VALVE", btnStyle, GUILayout.Width(160), GUILayout.Height(34)))
-            {
-                if (valveController != null) valveController.ToggleValve();
-            }
-            GUILayout.EndHorizontal();
-
-            GUILayout.EndArea();
-
-            // Restore GUI matrix
-            GUI.matrix = origMatrix;
         }
-        #endregion
 
-        #region Runtime uGUI Canvas Builder
+        private void UpdateStatusDisplays()
+        {
+            if (pumpController == null || valveController == null) FindReferences();
+
+            bool isPumpOn = (pumpController != null && pumpController.IsOn);
+            bool isValveOpen = (valveController != null && valveController.IsOpen);
+
+            // Pump status
+            if (pumpStatusText != null)
+            {
+                pumpStatusText.text = isPumpOn ? "PUMP: [ ON ]" : "PUMP: [ OFF ]";
+                pumpStatusText.color = isPumpOn ? Color.green : Color.red;
+            }
+
+            // Valve status
+            if (valveStatusText != null)
+            {
+                valveStatusText.text = isValveOpen ? "VALVE: [ OPEN ]" : "VALVE: [ CLOSED ]";
+                valveStatusText.color = isValveOpen ? Color.green : Color.red;
+            }
+
+            // Flow rate text & System Status
+            float currentFlow = (flowController != null) ? flowController.CurrentFlowRate : 0f;
+            if (flowRateText != null)
+            {
+                flowRateText.text = $"FLOW RATE: {currentFlow:F1} L/min";
+            }
+
+            if (systemStatusText != null)
+            {
+                ComputeStatus(out string statusStr, out Color statusColor);
+                systemStatusText.text = statusStr;
+                systemStatusText.color = statusColor;
+            }
+
+            if (_tank1Text != null)
+                _tank1Text.text = $"TANK 1 (Source): {Tanker1FillPercentage:F0}% ({tank1Current:F0} L)";
+            if (_tank2Text != null)
+                _tank2Text.text = $"TANK 2 (Storage): {Tanker2FillPercentage:F0}% ({tank2Current:F0} L)";
+        }
+
+        #region World-Space uGUI HUD Builder
         private Font GetValidFont()
         {
             Font f = null;
@@ -386,115 +267,119 @@ namespace PipelineControl
             return f;
         }
 
-        private void CreateRuntimeHUD()
+        private Text MkText(Transform parent, string name, Font font, int size, FontStyle style,
+                            Color color, TextAnchor align, Vector2 aMin, Vector2 aMax)
         {
-            GameObject canvasGO = new GameObject("PipelineHUDCanvas");
-            Canvas canvas = canvasGO.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var t = go.AddComponent<Text>();
+            t.font = font;
+            t.fontSize = size;
+            t.fontStyle = style;
+            t.color = color;
+            t.alignment = align;
+            t.horizontalOverflow = HorizontalWrapMode.Overflow;
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = aMin;
+            rt.anchorMax = aMax;
+            rt.offsetMin = new Vector2(8f, 0f);
+            rt.offsetMax = new Vector2(-8f, 0f);
+            return t;
+        }
+
+        private Button MkButton(Transform parent, string name, string label, Font font,
+                                Vector2 aMin, Vector2 aMax)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var img = go.AddComponent<Image>();
+            img.color = new Color(0.05f, 0.45f, 0.85f, 1f);
+            var btn = go.AddComponent<Button>();
+            btn.targetGraphic = img;
+            var cb = btn.colors;
+            cb.normalColor      = new Color(0.05f, 0.45f, 0.85f, 1f);
+            cb.highlightedColor = new Color(0.10f, 0.65f, 1.00f, 1f);
+            cb.pressedColor     = new Color(0.02f, 0.25f, 0.55f, 1f);
+            cb.disabledColor    = new Color(0.22f, 0.22f, 0.22f, 0.90f);
+            btn.colors = cb;
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = aMin;
+            rt.anchorMax = aMax;
+            rt.offsetMin = rt.offsetMax = Vector2.zero;
+
+            var lblGO = new GameObject("Label");
+            lblGO.transform.SetParent(go.transform, false);
+            var t = lblGO.AddComponent<Text>();
+            t.font = font;
+            t.text = label;
+            t.fontSize = 16;
+            t.fontStyle = FontStyle.Bold;
+            t.alignment = TextAnchor.MiddleCenter;
+            t.color = Color.white;
+            var lrt = lblGO.GetComponent<RectTransform>();
+            lrt.anchorMin = Vector2.zero;
+            lrt.anchorMax = Vector2.one;
+            lrt.offsetMin = lrt.offsetMax = Vector2.zero;
+            return btn;
+        }
+
+        private void CreateWorldSpaceHUD()
+        {
+            var canvasGO = new GameObject("PipelineHUDCanvas");
+            _hudCanvas = canvasGO.AddComponent<Canvas>();
+            _hudCanvas.renderMode = RenderMode.WorldSpace;
+            _hudCanvas.sortingOrder = 20;
+            _hudCanvas.worldCamera = Camera.main;
             canvasGO.AddComponent<CanvasScaler>();
             canvasGO.AddComponent<GraphicRaycaster>();
+            canvasGO.AddComponent<TrackedDeviceGraphicRaycaster>();
 
-            Font defaultFont = GetValidFont();
+            Vector3 pipePos = (_sim != null) ? _sim.GetPipePosition() : transform.position;
+            var cvRT = canvasGO.GetComponent<RectTransform>();
+            cvRT.sizeDelta  = hudPanelSize;
+            cvRT.localScale = Vector3.one * hudScale;
+            cvRT.position   = pipePos + hudOffsetFromPipe;
+            cvRT.rotation   = Quaternion.Euler(0f, hudYaw, 0f);
 
-            // Panel Background
-            GameObject panel = new GameObject("Panel");
+            Font f = GetValidFont();
+
+            // Dark semi-transparent background panel
+            var panel = new GameObject("HUDPanel");
             panel.transform.SetParent(canvasGO.transform, false);
-            Image panelImage = panel.AddComponent<Image>();
-            panelImage.color = new Color(0.1f, 0.1f, 0.1f, 0.85f);
-            RectTransform panelRect = panel.GetComponent<RectTransform>();
-            panelRect.anchorMin = new Vector2(0.02f, 0.65f);
-            panelRect.anchorMax = new Vector2(0.35f, 0.98f);
-            panelRect.offsetMin = Vector2.zero;
-            panelRect.offsetMax = Vector2.zero;
+            panel.AddComponent<Image>().color = new Color(0.07f, 0.09f, 0.14f, 0.95f);
+            var pRT = panel.GetComponent<RectTransform>();
+            pRT.anchorMin = Vector2.zero;
+            pRT.anchorMax = Vector2.one;
+            pRT.offsetMin = pRT.offsetMax = Vector2.zero;
 
-            // Pump Status Text
-            GameObject pumpTextGO = new GameObject("PumpStatusText");
-            pumpTextGO.transform.SetParent(panel.transform, false);
-            pumpStatusText = pumpTextGO.AddComponent<Text>();
-            pumpStatusText.font = defaultFont;
-            pumpStatusText.fontSize = 18;
-            pumpStatusText.alignment = TextAnchor.MiddleLeft;
-            RectTransform pumpTextRect = pumpTextGO.GetComponent<RectTransform>();
-            pumpTextRect.anchorMin = new Vector2(0.05f, 0.7f);
-            pumpTextRect.anchorMax = new Vector2(0.6f, 0.9f);
-            pumpTextRect.offsetMin = Vector2.zero;
-            pumpTextRect.offsetMax = Vector2.zero;
+            var left = TextAnchor.MiddleLeft;
 
-            // Pump Toggle Button
-            GameObject pumpBtnGO = new GameObject("PumpButton");
-            pumpBtnGO.transform.SetParent(panel.transform, false);
-            Image pumpBtnImg = pumpBtnGO.AddComponent<Image>();
-            pumpBtnImg.color = new Color(0.2f, 0.6f, 1f);
-            pumpButton = pumpBtnGO.AddComponent<Button>();
-            RectTransform pumpBtnRect = pumpBtnGO.GetComponent<RectTransform>();
-            pumpBtnRect.anchorMin = new Vector2(0.65f, 0.72f);
-            pumpBtnRect.anchorMax = new Vector2(0.95f, 0.88f);
-            pumpBtnRect.offsetMin = Vector2.zero;
-            pumpBtnRect.offsetMax = Vector2.zero;
+            MkText(panel.transform, "Title", f, 22, FontStyle.Bold, Color.cyan, left,
+                   new Vector2(0.03f, 0.86f), new Vector2(0.97f, 0.98f)).text = "PIPELINE FLOW CONTROL";
 
-            GameObject pumpBtnLabelGO = new GameObject("Label");
-            pumpBtnLabelGO.transform.SetParent(pumpBtnGO.transform, false);
-            Text pumpBtnLabel = pumpBtnLabelGO.AddComponent<Text>();
-            pumpBtnLabel.font = defaultFont;
-            pumpBtnLabel.text = "Toggle Pump";
-            pumpBtnLabel.alignment = TextAnchor.MiddleCenter;
-            pumpBtnLabel.color = Color.white;
-            RectTransform pumpBtnLabelRect = pumpBtnLabelGO.GetComponent<RectTransform>();
-            pumpBtnLabelRect.anchorMin = Vector2.zero;
-            pumpBtnLabelRect.anchorMax = Vector2.one;
-            pumpBtnLabelRect.offsetMin = Vector2.zero;
-            pumpBtnLabelRect.offsetMax = Vector2.zero;
+            systemStatusText = MkText(panel.transform, "StatusText", f, 15, FontStyle.Bold, Color.white, left,
+                   new Vector2(0.03f, 0.76f), new Vector2(0.97f, 0.86f));
 
-            // Valve Status Text
-            GameObject valveTextGO = new GameObject("ValveStatusText");
-            valveTextGO.transform.SetParent(panel.transform, false);
-            valveStatusText = valveTextGO.AddComponent<Text>();
-            valveStatusText.font = defaultFont;
-            valveStatusText.fontSize = 18;
-            valveStatusText.alignment = TextAnchor.MiddleLeft;
-            RectTransform valveTextRect = valveTextGO.GetComponent<RectTransform>();
-            valveTextRect.anchorMin = new Vector2(0.05f, 0.4f);
-            valveTextRect.anchorMax = new Vector2(0.6f, 0.6f);
-            valveTextRect.offsetMin = Vector2.zero;
-            valveTextRect.offsetMax = Vector2.zero;
+            flowRateText = MkText(panel.transform, "FlowRateText", f, 17, FontStyle.Bold, Color.yellow, left,
+                   new Vector2(0.03f, 0.66f), new Vector2(0.97f, 0.76f));
 
-            // Valve Toggle Button
-            GameObject valveBtnGO = new GameObject("ValveButton");
-            valveBtnGO.transform.SetParent(panel.transform, false);
-            Image valveBtnImg = valveBtnGO.AddComponent<Image>();
-            valveBtnImg.color = new Color(0.2f, 0.6f, 1f);
-            valveButton = valveBtnGO.AddComponent<Button>();
-            RectTransform valveBtnRect = valveBtnGO.GetComponent<RectTransform>();
-            valveBtnRect.anchorMin = new Vector2(0.65f, 0.42f);
-            valveBtnRect.anchorMax = new Vector2(0.95f, 0.58f);
-            valveBtnRect.offsetMin = Vector2.zero;
-            valveBtnRect.offsetMax = Vector2.zero;
+            _tank1Text = MkText(panel.transform, "Tank1Text", f, 15, FontStyle.Bold, Color.white, left,
+                   new Vector2(0.03f, 0.55f), new Vector2(0.97f, 0.65f));
 
-            GameObject valveBtnLabelGO = new GameObject("Label");
-            valveBtnLabelGO.transform.SetParent(valveBtnGO.transform, false);
-            Text valveBtnLabel = valveBtnLabelGO.AddComponent<Text>();
-            valveBtnLabel.font = defaultFont;
-            valveBtnLabel.text = "Toggle Valve";
-            valveBtnLabel.alignment = TextAnchor.MiddleCenter;
-            valveBtnLabel.color = Color.white;
-            RectTransform valveBtnLabelRect = valveBtnLabelGO.GetComponent<RectTransform>();
-            valveBtnLabelRect.anchorMin = Vector2.zero;
-            valveBtnLabelRect.anchorMax = Vector2.one;
-            valveBtnLabelRect.offsetMin = Vector2.zero;
-            valveBtnLabelRect.offsetMax = Vector2.zero;
+            _tank2Text = MkText(panel.transform, "Tank2Text", f, 15, FontStyle.Bold, Color.white, left,
+                   new Vector2(0.03f, 0.45f), new Vector2(0.97f, 0.55f));
 
-            // Flow Rate Text
-            GameObject flowTextGO = new GameObject("FlowRateText");
-            flowTextGO.transform.SetParent(panel.transform, false);
-            flowRateText = flowTextGO.AddComponent<Text>();
-            flowRateText.font = defaultFont;
-            flowRateText.fontSize = 16;
-            flowRateText.alignment = TextAnchor.MiddleLeft;
-            RectTransform flowTextRect = flowTextGO.GetComponent<RectTransform>();
-            flowTextRect.anchorMin = new Vector2(0.05f, 0.1f);
-            flowTextRect.anchorMax = new Vector2(0.95f, 0.3f);
-            flowTextRect.offsetMin = Vector2.zero;
-            flowTextRect.offsetMax = Vector2.zero;
+            // Pump row
+            pumpStatusText = MkText(panel.transform, "PumpStatusText", f, 16, FontStyle.Bold, Color.red, left,
+                   new Vector2(0.03f, 0.24f), new Vector2(0.50f, 0.40f));
+            pumpButton = MkButton(panel.transform, "PumpButton", "TOGGLE PUMP", f,
+                   new Vector2(0.52f, 0.24f), new Vector2(0.96f, 0.40f));
+
+            // Valve row
+            valveStatusText = MkText(panel.transform, "ValveStatusText", f, 16, FontStyle.Bold, Color.red, left,
+                   new Vector2(0.03f, 0.05f), new Vector2(0.50f, 0.21f));
+            valveButton = MkButton(panel.transform, "ValveButton", "TOGGLE VALVE", f,
+                   new Vector2(0.52f, 0.05f), new Vector2(0.96f, 0.21f));
         }
         #endregion
     }
