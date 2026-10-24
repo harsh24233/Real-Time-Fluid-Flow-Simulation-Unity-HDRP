@@ -9,6 +9,10 @@ using UnityEngine.XR.Interaction.Toolkit.UI;
 /// Simulation 1: Forward Flow (Cube.001 Source -> Cube.002 Destination)
 /// Simulation 2: Reverse Flow (Cube.002 Source -> Cube.001 Destination - 8 Points Path)
 /// Both simulations feature independent customizable Scene View waypoints and UI controls.
+///
+/// Rig support: the pipeline root (parent of the pipe object) can be moved, rotated and scaled.
+/// Waypoint offsets stay stored as world-axis offsets of the rest pose; at runtime they follow
+/// the rig. Tank fluid is parented to the rig, particle size follows the rig scale.
 /// </summary>
 public class FluidFlowSimulation : MonoBehaviour
 {
@@ -83,6 +87,14 @@ public class FluidFlowSimulation : MonoBehaviour
     private Canvas _canvas;
     private bool   _xrModuleReady;
 
+    // Rig (pipeline root) tracking
+    private Transform  _rig;
+    private bool       _restCaptured;
+    private Quaternion _restRot   = Quaternion.identity;
+    private Vector3    _restScale = Vector3.one;
+    private Bounds     _srcLocalBounds;
+    private Bounds     _dstLocalBounds;
+
     // UI elements - Sim 1
     private Button _startBtnSim1;
     private Text   _startBtnTxtSim1;
@@ -103,6 +115,7 @@ public class FluidFlowSimulation : MonoBehaviour
     private void Awake()
     {
         Resolve();
+        CaptureRigRest();
 
         if (sourceTank != null)      _srcFluid = BuildInternalFluid(sourceTank, "Src");
         if (destinationTank != null) _dstFluid = BuildInternalFluid(destinationTank, "Dst");
@@ -251,6 +264,96 @@ public class FluidFlowSimulation : MonoBehaviour
         }
     }
 
+    // ------------------------------------------------------------------
+    // Rig support
+    // ------------------------------------------------------------------
+
+    // Remembers the rig's rest pose (rotation + scale) at startup.
+    private void CaptureRigRest()
+    {
+        _rig = (pipe != null) ? pipe.transform.parent : null;
+        if (_rig == null)
+        {
+            _restCaptured = false;
+            return;
+        }
+        _restRot      = _rig.rotation;
+        _restScale    = _rig.lossyScale;
+        _restCaptured = true;
+    }
+
+    private static float SafeDiv(float a, float b)
+    {
+        return Mathf.Abs(b) > 1e-6f ? a / b : 1f;
+    }
+
+    // Uniform scale of the rig relative to its rest pose (1 = unchanged).
+    private float RigScaleRatio
+    {
+        get
+        {
+            if (!_restCaptured || _rig == null) return 1f;
+            return SafeDiv(_rig.lossyScale.x, _restScale.x);
+        }
+    }
+
+    // Stored offsets are world-axis offsets of the rest pose. This converts one
+    // to a world offset that follows the rig's current rotation and scale.
+    private Vector3 OffsetToWorld(Vector3 offset)
+    {
+        if (!_restCaptured || _rig == null) return offset;
+
+        Vector3 cur   = _rig.lossyScale;
+        Vector3 ratio = new Vector3(
+            SafeDiv(cur.x, _restScale.x),
+            SafeDiv(cur.y, _restScale.y),
+            SafeDiv(cur.z, _restScale.z));
+
+        Vector3 local = Quaternion.Inverse(_restRot) * offset;
+        return _rig.rotation * Vector3.Scale(local, ratio);
+    }
+
+    // Bounds of a tank in the rig's local space (world space if there is no rig).
+    private Bounds LocalBounds(GameObject go)
+    {
+        Matrix4x4 toSpace = (_rig != null) ? _rig.worldToLocalMatrix : Matrix4x4.identity;
+        bool first = true;
+        Bounds b = default;
+
+        foreach (var r in go.GetComponentsInChildren<Renderer>(true))
+        {
+            Bounds lb;
+            Matrix4x4 m;
+            var mf = r.GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null && !(r is SkinnedMeshRenderer))
+            {
+                lb = mf.sharedMesh.bounds;
+                m  = toSpace * r.localToWorldMatrix;
+            }
+            else
+            {
+                lb = r.bounds;
+                m  = toSpace;
+            }
+
+            Vector3 c = lb.center;
+            Vector3 e = lb.extents;
+            for (int i = 0; i < 8; i++)
+            {
+                Vector3 corner = c + new Vector3(
+                    (i & 1) == 0 ? -e.x : e.x,
+                    (i & 2) == 0 ? -e.y : e.y,
+                    (i & 4) == 0 ? -e.z : e.z);
+                Vector3 p = m.MultiplyPoint3x4(corner);
+                if (first) { b = new Bounds(p, Vector3.zero); first = false; }
+                else b.Encapsulate(p);
+            }
+        }
+
+        if (first) b = new Bounds(toSpace.MultiplyPoint3x4(go.transform.position), Vector3.one);
+        return b;
+    }
+
     // Public API
     public void StartFlowSim1()
     {
@@ -360,19 +463,19 @@ public class FluidFlowSimulation : MonoBehaviour
         if (useCustomWaypointsSim1 && customWaypointsSim1 != null && customWaypointsSim1.Count >= 2)
         {
             Vector3[] res = new Vector3[customWaypointsSim1.Count];
-            for (int i = 0; i < customWaypointsSim1.Count; i++) res[i] = pipePos + customWaypointsSim1[i];
+            for (int i = 0; i < customWaypointsSim1.Count; i++) res[i] = pipePos + OffsetToWorld(customWaypointsSim1[i]);
             return res;
         }
         return new Vector3[] {
-            pipePos + new Vector3(-1.85f, 0.18f, 0f),
-            pipePos + new Vector3(-1.30f, 0.18f, 0f),
-            pipePos + new Vector3(-0.70f, 0.18f, 0f),
-            pipePos + new Vector3(-0.10f, 0.18f, 0f),
-            pipePos + new Vector3(0.50f,  0.18f, 0f),
-            pipePos + new Vector3(1.00f,  0.18f, 0f),
-            pipePos + new Vector3(1.45f,  0.18f, 0f),
-            pipePos + new Vector3(1.70f,  0.18f, 0f),
-            pipePos + new Vector3(1.85f,  0.18f, 0f)
+            pipePos + OffsetToWorld(new Vector3(-1.85f, 0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(-1.30f, 0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(-0.70f, 0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(-0.10f, 0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(0.50f,  0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(1.00f,  0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(1.45f,  0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(1.70f,  0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(1.85f,  0.18f, 0f))
         };
     }
 
@@ -398,18 +501,18 @@ public class FluidFlowSimulation : MonoBehaviour
         if (useCustomWaypointsSim2 && customWaypointsSim2 != null && customWaypointsSim2.Count >= 2)
         {
             Vector3[] res = new Vector3[customWaypointsSim2.Count];
-            for (int i = 0; i < customWaypointsSim2.Count; i++) res[i] = pipePos + customWaypointsSim2[i];
+            for (int i = 0; i < customWaypointsSim2.Count; i++) res[i] = pipePos + OffsetToWorld(customWaypointsSim2[i]);
             return res;
         }
         return new Vector3[] {
-            pipePos + new Vector3(1.85f,  0.18f, 0f),
-            pipePos + new Vector3(1.85f,  0.35f, 0f),
-            pipePos + new Vector3(1.80f,  0.52f, 0f),
-            pipePos + new Vector3(1.50f,  0.58f, 0f),
-            pipePos + new Vector3(0.70f,  0.58f, 0f),
-            pipePos + new Vector3(-0.30f, 0.58f, 0f),
-            pipePos + new Vector3(-1.10f, 0.58f, 0f),
-            pipePos + new Vector3(-1.85f, 0.58f, 0f)
+            pipePos + OffsetToWorld(new Vector3(1.85f,  0.18f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(1.85f,  0.35f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(1.80f,  0.52f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(1.50f,  0.58f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(0.70f,  0.58f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(-0.30f, 0.58f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(-1.10f, 0.58f, 0f)),
+            pipePos + OffsetToWorld(new Vector3(-1.85f, 0.58f, 0f))
         };
     }
 
@@ -485,6 +588,10 @@ public class FluidFlowSimulation : MonoBehaviour
         }
         totalL = Mathf.Max(totalL, 0.001f);
 
+        float scaleRatio = RigScaleRatio;
+        float pSize      = particleSize * scaleRatio;
+        float jitterAmt  = 0.006f * scaleRatio;
+
         for (int i = 0; i < count; i++)
         {
             float totalLife = _particleBuffer[i].startLifetime;
@@ -518,10 +625,11 @@ public class FluidFlowSimulation : MonoBehaviour
             if (perp.sqrMagnitude < 0.01f) perp = Vector3.Cross(dir, Vector3.forward);
             perp.Normalize();
             Vector3 perp2 = Vector3.Cross(dir, perp).normalized;
-            Vector3 jitter = (perp * Mathf.Cos(rAngle) + perp2 * Mathf.Sin(rAngle)) * 0.006f;
+            Vector3 jitter = (perp * Mathf.Cos(rAngle) + perp2 * Mathf.Sin(rAngle)) * jitterAmt;
 
-            _particleBuffer[i].position = pos + jitter;
-            _particleBuffer[i].velocity = Vector3.zero;
+            _particleBuffer[i].position  = pos + jitter;
+            _particleBuffer[i].velocity  = Vector3.zero;
+            _particleBuffer[i].startSize = pSize;
         }
 
         _pipePS.SetParticles(_particleBuffer, count);
@@ -539,20 +647,33 @@ public class FluidFlowSimulation : MonoBehaviour
 
     private Transform BuildInternalFluid(GameObject tank, string label)
     {
-        Bounds wb = WorldBounds(tank);
+        Bounds lb = LocalBounds(tank);
+        if (label == "Src") _srcLocalBounds = lb;
+        else if (label == "Dst") _dstLocalBounds = lb;
 
-        float insetX = wb.size.x * kInset;
-        float insetZ = wb.size.z * kInset;
-        float fluidW = wb.size.x - insetX * 2f;
-        float fluidD = wb.size.z - insetZ * 2f;
+        float insetX = lb.size.x * kInset;
+        float insetZ = lb.size.z * kInset;
+        float fluidW = lb.size.x - insetX * 2f;
+        float fluidD = lb.size.z - insetZ * 2f;
 
         var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
         go.name = "InternalFluid_" + label;
         Object.DestroyImmediate(go.GetComponent<Collider>());
 
-        go.transform.SetParent(this.transform, false);
-        go.transform.rotation   = Quaternion.identity;
-        go.transform.position   = new Vector3(wb.center.x, wb.min.y + 0.0005f, wb.center.z);
+        // Parent to the rig so the fluid moves, rotates and scales with it.
+        go.transform.SetParent(_rig != null ? _rig : this.transform, false);
+
+        Vector3 pos = new Vector3(lb.center.x, lb.min.y + 0.0005f, lb.center.z);
+        if (_rig != null)
+        {
+            go.transform.localRotation = Quaternion.identity;
+            go.transform.localPosition = pos;
+        }
+        else
+        {
+            go.transform.rotation = Quaternion.identity;
+            go.transform.position = pos;
+        }
         go.transform.localScale = new Vector3(fluidW, 0.001f, fluidD);
 
         var mat = MakeFluidMaterial(kFluidBase);
@@ -565,29 +686,29 @@ public class FluidFlowSimulation : MonoBehaviour
 
     private void RefreshFluids()
     {
-        if (sourceTank != null)
-            SetFluidLevel(_srcFluid, WorldBounds(sourceTank), sourceFillPercent);
-        if (destinationTank != null)
-            SetFluidLevel(_dstFluid, WorldBounds(destinationTank), destinationFillPercent);
+        SetFluidLevel(_srcFluid, _srcLocalBounds, sourceFillPercent);
+        SetFluidLevel(_dstFluid, _dstLocalBounds, destinationFillPercent);
 
         Color col = IsFlowing ? kFluidFlow : kFluidBase;
         TintFluid(_srcFluid, _srcMat, col);
         TintFluid(_dstFluid, _dstMat, col);
     }
 
-    private static void SetFluidLevel(Transform fluid, Bounds wb, float pct)
+    private void SetFluidLevel(Transform fluid, Bounds lb, float pct)
     {
         if (fluid == null) return;
 
-        float insetX = wb.size.x * kInset;
-        float insetZ = wb.size.z * kInset;
-        float fluidW = Mathf.Max(wb.size.x - insetX * 2f, 0.001f);
-        float fluidD = Mathf.Max(wb.size.z - insetZ * 2f, 0.001f);
+        float insetX = lb.size.x * kInset;
+        float insetZ = lb.size.z * kInset;
+        float fluidW = Mathf.Max(lb.size.x - insetX * 2f, 0.001f);
+        float fluidD = Mathf.Max(lb.size.z - insetZ * 2f, 0.001f);
 
         float fill  = Mathf.Clamp01(pct / 100f);
-        float fillH = Mathf.Max(wb.size.y * fill, 0.001f);
+        float fillH = Mathf.Max(lb.size.y * fill, 0.001f);
 
-        fluid.position   = new Vector3(wb.center.x, wb.min.y + fillH * 0.5f, wb.center.z);
+        Vector3 pos = new Vector3(lb.center.x, lb.min.y + fillH * 0.5f, lb.center.z);
+        if (_rig != null) fluid.localPosition = pos;
+        else              fluid.position      = pos;
         fluid.localScale = new Vector3(fluidW, fillH, fluidD);
     }
 
@@ -908,18 +1029,5 @@ public class FluidFlowSimulation : MonoBehaviour
     {
         if (mat == null) return;
         ConfigureWaterMaterial(mat, col);
-    }
-
-    private static Bounds WorldBounds(GameObject go)
-    {
-        bool first = true;
-        Bounds b   = default;
-        foreach (var r in go.GetComponentsInChildren<Renderer>(true))
-        {
-            if (first) { b = r.bounds; first = false; }
-            else         b.Encapsulate(r.bounds);
-        }
-        if (first) b = new Bounds(go.transform.position, Vector3.one);
-        return b;
     }
 }
